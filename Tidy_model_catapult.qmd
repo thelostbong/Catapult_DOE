@@ -292,50 +292,102 @@ model_comparison %>%
 
 
 ```{r}
-#| label: phase2-type2-anova
-#| tbl-cap: "Type II ANOVA: Factor Importance Ranking"
-#| message: false
-library(car)
-# Use Model 1 (main effects) for factor importance
-# Type II tests each factor after accounting for others
-type2_anova <- Anova(model_1, type = "II")
+#| label: phase3-factor-importance
+#| tbl-cap: "Factor Importance Comparison: Full vs Fractional Factorial"
 
-# Convert to tidy format
-type2_results <- type2_anova %>%
+# Type II ANOVA for FULL factorial
+type2_full <- Anova(model_1, type = "II")
+
+type2_full_results <- type2_full %>%
   as.data.frame() %>%
   rownames_to_column("Factor") %>%
-  as_tibble() %>%
   filter(Factor != "Residuals") %>%
   mutate(
     Factor = case_when(
-      Factor == "LaunchAngle_deg" ~ "A: Launch Angle (degrees)",
-      Factor == "ArmLength_cm" ~ "B: Arm Length (cm)",
-      Factor == "RubberBands_count" ~ "C: Rubber Bands (count)",
-      TRUE ~ Factor
+      Factor == "LaunchAngle_deg" ~ "Launch Angle",
+      Factor == "ArmLength_cm" ~ "Arm Length",
+      Factor == "RubberBands_count" ~ "Rubber Bands"
     ),
-    Percent_SS = (`Sum Sq` / sum(`Sum Sq`)) * 100,
-    Significance = case_when(
-      `Pr(>F)` < 0.001 ~ "***",
-      `Pr(>F)` < 0.01 ~ "**",
-      `Pr(>F)` < 0.05 ~ "*",
-      TRUE ~ ""
-    )
+    Variance_Percent = (`Sum Sq` / sum(`Sum Sq`)) * 100
   ) %>%
-  arrange(desc(`F value`)) %>%
-  mutate(Rank = row_number())
+  arrange(desc(`F value`))
 
-# Display table
-type2_results %>%
-  select(Rank, Factor, `Sum Sq`, `F value`, `Pr(>F)`, Percent_SS, Significance) %>%
+# Type II ANOVA for FRACTIONAL
+type2_frac <- Anova(model_fractional, type = "II")
+
+type2_frac_results <- type2_frac %>%
+  as.data.frame() %>%
+  rownames_to_column("Factor") %>%
+  filter(Factor != "Residuals") %>%
   mutate(
-    `Sum Sq` = round(`Sum Sq`, 1),
-    `F value` = round(`F value`, 2),
-    `Pr(>F)` = ifelse(`Pr(>F)` < 0.001, "<0.001", round(`Pr(>F)`, 4)),
-    Percent_SS = paste0(round(Percent_SS, 1), "%")
+    Factor = case_when(
+      Factor == "LaunchAngle_deg" ~ "Launch Angle",
+      Factor == "ArmLength_cm" ~ "Arm Length",
+      Factor == "RubberBands_count" ~ "Rubber Bands"
+    ),
+    Variance_Percent = (`Sum Sq` / sum(`Sum Sq`)) * 100
   ) %>%
-  kable(col.names = c("Rank", "Factor", "Sum of Squares", "F-value", 
-                      "P-value", "% Total SS", "Sig.")) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  arrange(desc(`F value`))
+
+# Create comparison table
+type2_full_results %>%
+  select(Factor, Full_F = `F value`, Full_Var = Variance_Percent, Full_p = `Pr(>F)`) %>%
+  left_join(
+    type2_frac_results %>% 
+      select(Factor, Frac_F = `F value`, Frac_Var = Variance_Percent, Frac_p = `Pr(>F)`),
+    by = "Factor"
+  ) %>%
+  arrange(desc(Full_F)) %>%
+  mutate(
+    across(c(Full_F, Frac_F), ~round(., 1)),
+    across(c(Full_Var, Frac_Var), ~round(., 1)),
+    across(c(Full_p, Frac_p), ~ifelse(. < 0.001, "<0.001", round(., 3)))
+  ) %>%
+  kable(col.names = c("Factor", "F-value", "Var%", "p-value", 
+                      "F-value", "Var%", "p-value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "Full Factorial (24 runs)" = 3, "Fractional (12 runs)" = 3))
+```
+
+```{r}
+#| label: phase2-importance-plot
+#| fig-width: 12
+#| fig-height: 6
+
+# Prepare data for plotting
+plot_data_full <- type2_full_results %>%
+  mutate(Design = "Full Factorial\n(24 runs)")
+
+plot_data_frac <- type2_frac_results %>%
+  mutate(Design = "Fractional Factorial\n(12 runs)")
+
+plot_data <- bind_rows(plot_data_full, plot_data_frac) %>%
+  mutate(Factor = fct_reorder(Factor, Variance_Percent, .desc = FALSE))
+
+# Create side-by-side comparison plot
+ggplot(plot_data, aes(x = Variance_Percent, y = Factor, fill = Design)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.85) +
+  geom_text(aes(label = paste0(round(Variance_Percent, 1), "%")),
+            position = position_dodge(width = 0.8),
+            hjust = -0.2, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("Full Factorial\n(24 runs)" = "#2E86AB",
+                                "Fractional Factorial\n(12 runs)" = "#F18F01")) +
+  labs(
+    title = "Factor Importance Comparison: Full vs Fractional Factorial",
+    x = "Variance Explained (%)",
+    y = NULL,
+    fill = "Design Type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  xlim(0, max(plot_data$Variance_Percent) * 1.15)
 ```
 
 
@@ -383,73 +435,7 @@ std_effects %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
-```{r}
-#| label: phase2-importance-plot
-#| fig-width: 10
-#| fig-height: 6
-#| fig-cap: "Factor Importance: Two Perspectives"
 
-# Combine Type II and Standardized results
-# Need to standardize the factor names first
-importance_data <- type2_results %>%
-  select(Factor, F_value = `F value`) %>%
-  mutate(
-    # Simplify factor names for matching
-    Factor_simple = case_when(
-      str_detect(Factor, "Launch Angle") ~ "Launch Angle",
-      str_detect(Factor, "Arm Length") ~ "Arm Length",
-      str_detect(Factor, "Rubber Bands") ~ "Rubber Bands"
-    )
-  ) %>%
-  left_join(
-    std_effects %>% 
-      select(Factor, Std_Effect = estimate) %>%
-      mutate(
-        Factor_simple = case_when(
-          str_detect(Factor, "Launch Angle") ~ "Launch Angle",
-          str_detect(Factor, "Arm Length") ~ "Arm Length",
-          str_detect(Factor, "Rubber Bands") ~ "Rubber Bands"
-        )
-      ),
-    by = "Factor_simple"
-  ) %>%
-  select(Factor = Factor_simple, F_value, Std_Effect)
-
-# Create side-by-side plots
-p1 <- importance_data %>%
-  ggplot(aes(x = reorder(Factor, F_value), y = F_value, fill = Factor)) +
-  geom_col(alpha = 0.8) +
-  coord_flip() +
-  scale_fill_manual(values = c("Launch Angle" = "#F18F01", 
-                                "Arm Length" = "#2E86AB", 
-                                "Rubber Bands" = "#A23B72")) +
-  labs(
-    title = "Statistical Significance (Type II ANOVA)",
-    subtitle = "Larger F-value = More important",
-    x = NULL,
-    y = "F-value"
-  ) +
-  theme(legend.position = "none")
-
-p2 <- importance_data %>%
-  ggplot(aes(x = reorder(Factor, abs(Std_Effect)), y = abs(Std_Effect), fill = Factor)) +
-  geom_col(alpha = 0.8) +
-  coord_flip() +
-  scale_fill_manual(values = c("Launch Angle" = "#F18F01", 
-                                "Arm Length" = "#2E86AB", 
-                                "Rubber Bands" = "#A23B72")) +
-  labs(
-    title = "Practical Importance (Standardized Effects)",
-    subtitle = "Larger coefficient = Bigger impact",
-    x = NULL,
-    y = "Absolute Standardized Coefficient"
-  ) +
-  theme(legend.position = "none")
-
-# Combine plots
-library(patchwork)
-p1 + p2
-```
 ```{r}
 #| label: phase2-main-effects
 #| fig-width: 12
@@ -574,31 +560,34 @@ library(patchwork)
 ```
 
 ```{r}
-#| label: phase2-bestfit
+#| label: phase2-recommendation
 
-# Find best model by AIC
-best_model_idx <- which.min(model_comparison$AIC)
-best_model_name <- model_comparison$Model[best_model_idx]
-best_r2 <- model_comparison$R_squared[best_model_idx]
-best_adj_r2 <- model_comparison$Adj_R_squared[best_model_idx]
+# Find best model by AIC (from full factorial models)
+best_model_idx <- model_comparison %>% 
+  filter(Design == "Full (24 runs)") %>% 
+  slice_min(AIC, n = 1) %>%
+  pull(Model)
 
-cat("RECOMMENDED MODEL:", best_model_name, "\n\n")
+best_stats <- model_comparison %>% filter(Model == best_model_idx)
+
+cat("RECOMMENDED MODEL:", best_model_idx, "\n\n")
+
 cat("Model Performance:\n")
-cat("  - R² =", round(best_r2 * 100, 1), "%\n")
-cat("  - Adjusted R² =", round(best_adj_r2 * 100, 1), "%\n")
-cat("  - AIC =", round(model_comparison$AIC[best_model_idx], 1), "\n")
-cat("  - BIC =", round(model_comparison$BIC[best_model_idx], 1), "\n\n")
+cat("  - R² =", round(best_stats$R_squared * 100, 1), "%\n")
+cat("  - Adjusted R² =", round(best_stats$Adj_R_squared * 100, 1), "%\n")
+cat("  - RMSE =", round(best_stats$RMSE, 2), "cm\n")
+cat("  - AIC =", round(best_stats$AIC, 1), "\n\n")
 
 cat("FACTOR IMPORTANCE RANKING:\n")
-for(i in 1:nrow(type2_results)) {
-  cat(sprintf("  %d. %s (F=%.1f, p%s)\n", 
+for(i in 1:nrow(type2_full_results)) {
+  cat(sprintf("  %d. %s (F=%.1f, p%s, %.1f%% variance)\n", 
               i, 
-              type2_results$Factor[i],
-              type2_results$`F value`[i],
-              ifelse(type2_results$`Pr(>F)`[i] < 0.001, "<0.001", 
-                     paste0("=", round(type2_results$`Pr(>F)`[i], 3)))))
+              type2_full_results$Factor[i],
+              type2_full_results$`F value`[i],
+              ifelse(type2_full_results$`Pr(>F)`[i] < 0.001, "<0.001", 
+                     paste0("=", round(type2_full_results$`Pr(>F)`[i], 3))),
+              type2_full_results$Variance_Percent[i]))
 }
-
 ```
 
 ```{r}

@@ -1,0 +1,18 @@
+Metric,Value
+Number of Trials,50
+Reference Distance (cm),169.6
+Mean Tape Reading (cm),169.332
+Standard Deviation (cm),0.2075
+Minimum Reading (cm),168.9
+Maximum Reading (cm),169.8
+Range (cm),0.9
+Bias (cm),-0.268
+Target Cg,2
+Tolerance (±cm),6.224
+Lower Spec Limit (cm),163.376
+Upper Spec Limit (cm),175.824
+Cg (Precision),2
+Cg Status,PASS
+Cgk (Precision + Accuracy),3.57
+Cgk Status,PASS
+Overall MSA Status,PASS

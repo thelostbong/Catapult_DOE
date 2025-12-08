@@ -1,0 +1,761 @@
+---
+title: "tidy_model"
+format: html
+editor: visual
+---
+
+
+```{r}
+#| label: phase1-setup
+#| message: false
+#| warning: false
+
+# Load required packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(broom)
+
+# Load the dataset
+doe_data <- read_csv("Full_Factorial_Catapult_RunSheet.csv")
+
+# Quick inspection
+glimpse(doe_data)
+```
+```{r}
+#| label: phase1-structure
+
+# Check run types
+cat("\n\nRun type distribution:\n")
+table(doe_data$RunType)
+
+# Verify we have correct number of runs
+cat("\n\nTotal runs:", nrow(doe_data))
+cat("\nCorner points (RunType = 'Corner'):", sum(doe_data$RunType == "Corner"))
+cat("\nCenter points (RunType = 'Center'):", sum(doe_data$RunType == "Center"))
+
+# Check factor levels
+cat("\n\nFactor levels check:")
+cat("\nA_LaunchAngle unique values:", unique(doe_data$A_LaunchAngle))
+cat("\nB_ArmLength unique values:", unique(doe_data$B_ArmLength))
+cat("\nC_RubberBands unique values:", unique(doe_data$C_RubberBands))
+```
+```{r}
+#| label: phase1-descriptive
+
+summary_stats <- doe_data %>%
+  summarise(
+    N = n(),
+    Mean = mean(Distance_cm),
+    Median = median(Distance_cm),
+    SD = sd(Distance_cm),
+    Min = min(Distance_cm),
+    Max = max(Distance_cm),
+    Range = Max - Min 
+  )
+
+summary_stats %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>%
+  kable(caption = "Overall Descriptive Statistics for Distance (cm)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+```{r}
+#| label: phase1-corner-vs-center
+
+# Compare corner points vs center points
+corner_center_comparison <- doe_data %>%
+  group_by(RunType) %>%
+  summarise(
+    N = n(),
+    Mean = mean(Distance_cm),
+    SD = sd(Distance_cm),
+    Min = min(Distance_cm),
+    Max = max(Distance_cm),
+  )
+
+corner_center_comparison %>%
+  mutate(across(where(is.numeric) & !N, ~round(., 2))) %>%
+  kable(caption = "Corner Points vs Center Points Comparison") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+```{r}
+#| label: phase1-treatment-summary
+
+# Calculate mean distance for each treatment combination (corner points only)
+treatment_summary <- doe_data %>%
+  filter(RunType == "Corner") %>%
+  group_by(LaunchAngle_deg, ArmLength_cm, RubberBands_count) %>%
+  summarise(
+    N = n(),
+    Mean = mean(Distance_cm),
+    SD = sd(Distance_cm),
+    Min = min(Distance_cm),
+    Max = max(Distance_cm),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Mean))  # Sort by best performing first
+
+treatment_summary %>%
+  mutate(across(where(is.numeric) & !c(N, LaunchAngle_deg, RubberBands_count), ~round(., 2))) %>%
+  kable(caption = "Treatment Combination Summary (Ranked by Mean Distance)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r}
+#| label: phase1-distribution-plot
+#| fig-width: 10
+#| fig-height: 6
+
+# Histogram with density overlay
+ggplot(doe_data, aes(x = Distance_cm)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 bins = 15, fill = "#2E86AB", alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1.2, color = "#A23B72") +
+  geom_vline(xintercept = mean(doe_data$Distance_cm), 
+             linetype = "dashed", color = "red", linewidth = 1) +
+  annotate("text", x = mean(doe_data$Distance_cm), y = Inf, 
+           label = paste("Mean =", round(mean(doe_data$Distance_cm), 1), "cm"),
+           vjust = 2, hjust = -0.1, color = "red", size = 4) +
+  labs(
+    title = "Distribution of Catapult Distance",
+    subtitle = "All 30 runs (24 corner + 6 center)",
+    x = "Distance (cm)",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r}
+#| label: phase1-boxplot-runtype
+#| fig-width: 8
+#| fig-height: 6
+
+# Boxplot comparing corner vs center points
+ggplot(doe_data, aes(x = RunType, y = Distance_cm, fill = RunType)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 21, outlier.size = 3) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 4, 
+               fill = "red", color = "darkred") +
+  scale_fill_manual(values = c("Corner" = "#2E86AB", "Center" = "#F18F01")) +
+  labs(
+    title = "Distance Distribution: Corner vs Center Points",
+    subtitle = "Red diamonds = means",
+    x = "Run Type",
+    y = "Distance (cm)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+```{r}
+#| label: phase1-outlier-check
+
+# Calculate outliers using IQR method
+Q1 <- quantile(doe_data$Distance_cm, 0.25)
+Q3 <- quantile(doe_data$Distance_cm, 0.75)
+IQR_val <- Q3 - Q1
+lower_fence <- Q1 - 1.5 * IQR_val
+upper_fence <- Q3 + 1.5 * IQR_val
+
+# Identify potential outliers
+outliers <- doe_data %>%
+  filter(Distance_cm < lower_fence | Distance_cm > upper_fence) %>%
+  select(RunOrder, RunType, LaunchAngle_deg, ArmLength_cm, RubberBands_count, Distance_cm)
+
+cat("Outlier Detection (IQR Method):\n")
+cat("Lower Fence:", round(lower_fence, 2), "cm\n")
+cat("Upper Fence:", round(upper_fence, 2), "cm\n")
+cat("\nNumber of potential outliers:", nrow(outliers), "\n\n")
+
+if(nrow(outliers) > 0) {
+  cat("Potential outlier runs:\n")
+  print(outliers)
+} else {
+  cat("No outliers detected.\n")
+}
+```
+
+```{r}
+#| label: phase2-data-prep
+
+# Filter to corner points only (FULL factorial)
+doe_corner <- doe_data %>%
+  filter(RunType == "Corner")
+
+cat("FULL FACTORIAL DATA:\n")
+cat("  Corner points:", nrow(doe_corner), "\n")
+cat("  Unique combinations:", 
+    doe_corner %>% 
+      distinct(LaunchAngle_deg, ArmLength_cm, RubberBands_count) %>% 
+      nrow(), "\n\n")
+
+# Create FRACTIONAL factorial subset (2^(3-1) design)
+# Design generator: I = ABC (C = A × B)
+fractional_runs <- doe_corner %>%
+  filter(
+    (LaunchAngle_deg == 15 & ArmLength_cm == 7.5 & RubberBands_count == 4) |
+    (LaunchAngle_deg == 45 & ArmLength_cm == 7.5 & RubberBands_count == 2) |
+    (LaunchAngle_deg == 15 & ArmLength_cm == 11.5 & RubberBands_count == 2) |
+    (LaunchAngle_deg == 45 & ArmLength_cm == 11.5 & RubberBands_count == 4)
+  )
+
+cat("FRACTIONAL FACTORIAL SUBSET:\n")
+cat("  Runs:", nrow(fractional_runs), "(4 corners × 3 replicates)\n")
+cat("  Unique corners:", 
+    fractional_runs %>% 
+      distinct(LaunchAngle_deg, ArmLength_cm, RubberBands_count) %>% 
+      nrow(), "\n")
+cat("  Alias structure: [A]=A+BC, [B]=B+AC, [C]=C+AB\n")
+```
+
+```{r}
+#| label: phase2-fit-models
+
+# FULL FACTORIAL MODELS (24 runs)
+model_0 <- lm(Distance_cm ~ 1, data = doe_corner)
+
+model_1 <- lm(Distance_cm ~ LaunchAngle_deg + ArmLength_cm + RubberBands_count, 
+              data = doe_corner)
+
+model_2 <- lm(Distance_cm ~ LaunchAngle_deg + ArmLength_cm + RubberBands_count +
+                LaunchAngle_deg:ArmLength_cm + 
+                LaunchAngle_deg:RubberBands_count + 
+                ArmLength_cm:RubberBands_count,
+              data = doe_corner)
+
+model_3 <- lm(Distance_cm ~ LaunchAngle_deg * ArmLength_cm * RubberBands_count,
+              data = doe_corner)
+
+model_fractional <- lm(Distance_cm ~ LaunchAngle_deg + ArmLength_cm + RubberBands_count,
+                       data = fractional_runs)
+```
+
+```{r}
+#| label: phase2-model-comparison
+#| tbl-cap: "Model Comparison: Fit Statistics"
+
+# Extract statistics for all models
+model_comparison <- tibble(
+  Model = c("Model 0 (Null)", 
+            "Model 1 (Main Effects)", 
+            "Model 1F (Fractional)", 
+            "Model 2 (+ 2-way Interactions)", 
+            "Model 3 (Full Model)"),
+  Design = c("Full (24 runs)",
+             "Full (24 runs)",
+             "Fractional (12 runs)",
+             "Full (24 runs)",
+             "Full (24 runs)"),
+  Formula = c("Distance ~ 1",
+              "Distance ~ A + B + C",
+              "Distance ~ A + B + C",
+              "Distance ~ A + B + C + AB + AC + BC",
+              "Distance ~ A * B * C"),
+  Parameters = c(1, 4, 4, 7, 8),
+  AIC = c(AIC(model_0), AIC(model_1), AIC(model_fractional), AIC(model_2), AIC(model_3)),
+  BIC = c(BIC(model_0), BIC(model_1), BIC(model_fractional), BIC(model_2), BIC(model_3)),
+  R_squared = c(
+    summary(model_0)$r.squared,
+    summary(model_1)$r.squared,
+    summary(model_fractional)$r.squared,
+    summary(model_2)$r.squared,
+    summary(model_3)$r.squared
+  ),
+  Adj_R_squared = c(
+    summary(model_0)$adj.r.squared,
+    summary(model_1)$adj.r.squared,
+    summary(model_fractional)$adj.r.squared,
+    summary(model_2)$adj.r.squared,
+    summary(model_3)$adj.r.squared
+  ),
+  RMSE = c(
+    sigma(model_0),
+    sigma(model_1),
+    sigma(model_fractional),
+    sigma(model_2),
+    sigma(model_3)
+  )
+)
+
+model_comparison %>%
+  mutate(
+    across(c(AIC, BIC), ~round(., 1)),
+    across(c(R_squared, Adj_R_squared), ~round(. * 100, 1)),
+    RMSE = round(RMSE, 2)
+  ) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+
+```{r}
+#| label: phase2-type2-anova
+#| tbl-cap: "Type II ANOVA: Factor Importance Ranking"
+#| message: false
+library(car)
+# Use Model 1 (main effects) for factor importance
+# Type II tests each factor after accounting for others
+type2_anova <- Anova(model_1, type = "II")
+
+# Convert to tidy format
+type2_results <- type2_anova %>%
+  as.data.frame() %>%
+  rownames_to_column("Factor") %>%
+  as_tibble() %>%
+  filter(Factor != "Residuals") %>%
+  mutate(
+    Factor = case_when(
+      Factor == "LaunchAngle_deg" ~ "A: Launch Angle (degrees)",
+      Factor == "ArmLength_cm" ~ "B: Arm Length (cm)",
+      Factor == "RubberBands_count" ~ "C: Rubber Bands (count)",
+      TRUE ~ Factor
+    ),
+    Percent_SS = (`Sum Sq` / sum(`Sum Sq`)) * 100,
+    Significance = case_when(
+      `Pr(>F)` < 0.001 ~ "***",
+      `Pr(>F)` < 0.01 ~ "**",
+      `Pr(>F)` < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  arrange(desc(`F value`)) %>%
+  mutate(Rank = row_number())
+
+# Display table
+type2_results %>%
+  select(Rank, Factor, `Sum Sq`, `F value`, `Pr(>F)`, Percent_SS, Significance) %>%
+  mutate(
+    `Sum Sq` = round(`Sum Sq`, 1),
+    `F value` = round(`F value`, 2),
+    `Pr(>F)` = ifelse(`Pr(>F)` < 0.001, "<0.001", round(`Pr(>F)`, 4)),
+    Percent_SS = paste0(round(Percent_SS, 1), "%")
+  ) %>%
+  kable(col.names = c("Rank", "Factor", "Sum of Squares", "F-value", 
+                      "P-value", "% Total SS", "Sig.")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+
+```{r}
+#| label: phase2-standardized-effects
+
+# Standardize the predictors (z-scores)
+doe_corner_std <- doe_corner %>%
+  mutate(
+    LaunchAngle_std = scale(LaunchAngle_deg)[,1],
+    ArmLength_std = scale(ArmLength_cm)[,1],
+    RubberBands_std = scale(RubberBands_count)[,1]
+  )
+
+# Fit model with standardized predictors
+model_std <- lm(Distance_cm ~ LaunchAngle_std + ArmLength_std + RubberBands_std,
+                data = doe_corner_std)
+
+# Extract standardized coefficients
+std_effects <- tidy(model_std) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    Factor = case_when(
+      term == "LaunchAngle_std" ~ "A: Launch Angle",
+      term == "ArmLength_std" ~ "B: Arm Length",
+      term == "RubberBands_std" ~ "C: Rubber Bands"
+    ),
+    abs_estimate = abs(estimate)
+  ) %>%
+  arrange(desc(abs_estimate)) %>%
+  mutate(Rank = row_number())
+
+# Display table
+std_effects %>%
+  select(Rank, Factor, estimate, std.error, statistic, p.value) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2),
+    p.value = ifelse(p.value < 0.001, "<0.001", round(p.value, 4))
+  ) %>%
+  kable(col.names = c("Rank", "Factor", "Std. Coefficient", "Std. Error", 
+                      "t-value", "P-value"),
+        caption = "Standardized Effects (Comparable Across Factors)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r}
+#| label: phase2-importance-plot
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "Factor Importance: Two Perspectives"
+
+# Combine Type II and Standardized results
+# Need to standardize the factor names first
+importance_data <- type2_results %>%
+  select(Factor, F_value = `F value`) %>%
+  mutate(
+    # Simplify factor names for matching
+    Factor_simple = case_when(
+      str_detect(Factor, "Launch Angle") ~ "Launch Angle",
+      str_detect(Factor, "Arm Length") ~ "Arm Length",
+      str_detect(Factor, "Rubber Bands") ~ "Rubber Bands"
+    )
+  ) %>%
+  left_join(
+    std_effects %>% 
+      select(Factor, Std_Effect = estimate) %>%
+      mutate(
+        Factor_simple = case_when(
+          str_detect(Factor, "Launch Angle") ~ "Launch Angle",
+          str_detect(Factor, "Arm Length") ~ "Arm Length",
+          str_detect(Factor, "Rubber Bands") ~ "Rubber Bands"
+        )
+      ),
+    by = "Factor_simple"
+  ) %>%
+  select(Factor = Factor_simple, F_value, Std_Effect)
+
+# Create side-by-side plots
+p1 <- importance_data %>%
+  ggplot(aes(x = reorder(Factor, F_value), y = F_value, fill = Factor)) +
+  geom_col(alpha = 0.8) +
+  coord_flip() +
+  scale_fill_manual(values = c("Launch Angle" = "#F18F01", 
+                                "Arm Length" = "#2E86AB", 
+                                "Rubber Bands" = "#A23B72")) +
+  labs(
+    title = "Statistical Significance (Type II ANOVA)",
+    subtitle = "Larger F-value = More important",
+    x = NULL,
+    y = "F-value"
+  ) +
+  theme(legend.position = "none")
+
+p2 <- importance_data %>%
+  ggplot(aes(x = reorder(Factor, abs(Std_Effect)), y = abs(Std_Effect), fill = Factor)) +
+  geom_col(alpha = 0.8) +
+  coord_flip() +
+  scale_fill_manual(values = c("Launch Angle" = "#F18F01", 
+                                "Arm Length" = "#2E86AB", 
+                                "Rubber Bands" = "#A23B72")) +
+  labs(
+    title = "Practical Importance (Standardized Effects)",
+    subtitle = "Larger coefficient = Bigger impact",
+    x = NULL,
+    y = "Absolute Standardized Coefficient"
+  ) +
+  theme(legend.position = "none")
+
+# Combine plots
+library(patchwork)
+p1 + p2
+```
+```{r}
+#| label: phase2-main-effects
+#| fig-width: 12
+#| fig-height: 4
+#| fig-cap: "Main Effects of Each Factor on Distance"
+
+# Calculate main effects
+main_effects_A <- doe_corner %>%
+  group_by(LaunchAngle_deg) %>%
+  summarise(
+    mean_dist = mean(Distance_cm),
+    se = sd(Distance_cm) / sqrt(n()),
+    .groups = "drop"
+  )
+
+main_effects_B <- doe_corner %>%
+  group_by(ArmLength_cm) %>%
+  summarise(
+    mean_dist = mean(Distance_cm),
+    se = sd(Distance_cm) / sqrt(n()),
+    .groups = "drop"
+  )
+
+main_effects_C <- doe_corner %>%
+  group_by(RubberBands_count) %>%
+  summarise(
+    mean_dist = mean(Distance_cm),
+    se = sd(Distance_cm) / sqrt(n()),
+    .groups = "drop"
+  )
+
+# Create three plots
+p_A <- ggplot(main_effects_A, aes(x = LaunchAngle_deg, y = mean_dist)) +
+  geom_line(linewidth = 1.2, color = "#2E86AB") +
+  geom_point(size = 4, color = "#2E86AB") +
+  geom_errorbar(aes(ymin = mean_dist - se, ymax = mean_dist + se), 
+                width = 2, linewidth = 1) +
+  labs(title = "A: Launch Angle", x = "Angle (degrees)", y = "Mean Distance (cm)") +
+  theme(plot.title = element_text(face = "bold"))
+
+p_B <- ggplot(main_effects_B, aes(x = ArmLength_cm, y = mean_dist)) +
+  geom_line(linewidth = 1.2, color = "#F18F01") +
+  geom_point(size = 4, color = "#F18F01") +
+  geom_errorbar(aes(ymin = mean_dist - se, ymax = mean_dist + se), 
+                width = 0.2, linewidth = 1) +
+  labs(title = "B: Arm Length", x = "Arm Length (cm)", y = "Mean Distance (cm)") +
+  theme(plot.title = element_text(face = "bold"))
+
+p_C <- ggplot(main_effects_C, aes(x = RubberBands_count, y = mean_dist)) +
+  geom_line(linewidth = 1.2, color = "#A23B72") +
+  geom_point(size = 4, color = "#A23B72") +
+  geom_errorbar(aes(ymin = mean_dist - se, ymax = mean_dist + se), 
+                width = 0.1, linewidth = 1) +
+  labs(title = "C: Rubber Bands", x = "Number of Bands", y = "Mean Distance (cm)") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Combine
+p_A + p_B + p_C
+```
+
+```{r}
+#| label: phase2-interaction-plots
+#| fig-width: 12
+#| fig-height: 8
+#| fig-cap: "Two-Way Interaction Plots"
+
+# Calculate interaction effects
+int_AB <- doe_corner %>%
+  group_by(LaunchAngle_deg, ArmLength_cm) %>%
+  summarise(mean_dist = mean(Distance_cm), .groups = "drop") %>%
+  mutate(ArmLength_cm = factor(ArmLength_cm))
+
+int_AC <- doe_corner %>%
+  group_by(LaunchAngle_deg, RubberBands_count) %>%
+  summarise(mean_dist = mean(Distance_cm), .groups = "drop") %>%
+  mutate(RubberBands_count = factor(RubberBands_count))
+
+int_BC <- doe_corner %>%
+  group_by(ArmLength_cm, RubberBands_count) %>%
+  summarise(mean_dist = mean(Distance_cm), .groups = "drop") %>%
+  mutate(RubberBands_count = factor(RubberBands_count))
+
+# Create interaction plots
+p_AB <- ggplot(int_AB, aes(x = LaunchAngle_deg, y = mean_dist, 
+                           color = ArmLength_cm, group = ArmLength_cm)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 4) +
+  scale_color_manual(values = c("7.5" = "#2E86AB", "11.5" = "#F18F01"),
+                     labels = c("7.5 cm", "11.5 cm")) +
+  labs(title = "A × B: Angle × Arm Length Interaction",
+       x = "Launch Angle (degrees)", 
+       y = "Mean Distance (cm)",
+       color = "Arm Length") +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+p_AC <- ggplot(int_AC, aes(x = LaunchAngle_deg, y = mean_dist,
+                           color = RubberBands_count, group = RubberBands_count)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 4) +
+  scale_color_manual(values = c("2" = "#2E86AB", "4" = "#A23B72"),
+                     labels = c("2 bands", "4 bands")) +
+  labs(title = "A × C: Angle × Rubber Bands Interaction",
+       x = "Launch Angle (degrees)", 
+       y = "Mean Distance (cm)",
+       color = "Rubber Bands") +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+p_BC <- ggplot(int_BC, aes(x = ArmLength_cm, y = mean_dist,
+                           color = RubberBands_count, group = RubberBands_count)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 4) +
+  scale_color_manual(values = c("2" = "#F18F01", "4" = "#A23B72"),
+                     labels = c("2 bands", "4 bands")) +
+  labs(title = "B × C: Arm Length × Rubber Bands Interaction",
+       x = "Arm Length (cm)", 
+       y = "Mean Distance (cm)",
+       color = "Rubber Bands") +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+library(patchwork)
+(p_AB + p_AC) / (p_BC + plot_spacer())
+```
+
+```{r}
+#| label: phase2-bestfit
+
+# Find best model by AIC
+best_model_idx <- which.min(model_comparison$AIC)
+best_model_name <- model_comparison$Model[best_model_idx]
+best_r2 <- model_comparison$R_squared[best_model_idx]
+best_adj_r2 <- model_comparison$Adj_R_squared[best_model_idx]
+
+cat("RECOMMENDED MODEL:", best_model_name, "\n\n")
+cat("Model Performance:\n")
+cat("  - R² =", round(best_r2 * 100, 1), "%\n")
+cat("  - Adjusted R² =", round(best_adj_r2 * 100, 1), "%\n")
+cat("  - AIC =", round(model_comparison$AIC[best_model_idx], 1), "\n")
+cat("  - BIC =", round(model_comparison$BIC[best_model_idx], 1), "\n\n")
+
+cat("FACTOR IMPORTANCE RANKING:\n")
+for(i in 1:nrow(type2_results)) {
+  cat(sprintf("  %d. %s (F=%.1f, p%s)\n", 
+              i, 
+              type2_results$Factor[i],
+              type2_results$`F value`[i],
+              ifelse(type2_results$`Pr(>F)`[i] < 0.001, "<0.001", 
+                     paste0("=", round(type2_results$`Pr(>F)`[i], 3)))))
+}
+
+```
+
+```{r}
+#| label: phase3-center-data
+#| message: false
+
+# Separate center points from full data
+center_points <- doe_data %>%
+  filter(RunType == "Center")
+
+# Verify center point configuration
+cat("Center Point Configuration:\n")
+cat("  Launch Angle:", unique(center_points$LaunchAngle_deg), "degrees\n")
+cat("  Arm Length:", unique(center_points$ArmLength_cm), "cm\n")
+cat("  Rubber Bands:", unique(center_points$RubberBands_count), "bands\n\n")
+
+cat("Center Point Summary:\n")
+cat("  N =", nrow(center_points), "runs\n")
+cat("  Mean Distance =", round(mean(center_points$Distance_cm), 2), "cm\n")
+cat("  SD =", round(sd(center_points$Distance_cm), 2), "cm\n")
+cat("  Min =", round(min(center_points$Distance_cm), 2), "cm\n")
+cat("  Max =", round(max(center_points$Distance_cm), 2), "cm\n")
+```
+
+```{r}
+#| label: phase3-predict-center
+
+# Create prediction data frame (one row with center point values)
+center_prediction_data <- data.frame(
+  LaunchAngle_deg = 30,
+  ArmLength_cm = 9.5,
+  RubberBands_count = 3
+)
+
+# Predict what Model 2 expects at center point
+predicted_center <- predict(model_2, newdata = center_prediction_data)
+
+# Calculate actual center point mean
+actual_center <- mean(center_points$Distance_cm)
+
+# Calculate difference (curvature indicator)
+curvature_gap <- actual_center - predicted_center
+
+# Display results
+cat("CURVATURE TEST: CENTER POINT ANALYSIS\n")
+
+cat("Model 2 Prediction at Center Point:\n")
+cat("  Predicted Distance =", round(predicted_center, 2), "cm\n\n")
+
+cat("Actual Center Point Performance:\n")
+cat("  Actual Mean Distance =", round(actual_center, 2), "cm\n")
+cat("  Standard Deviation =", round(sd(center_points$Distance_cm), 2), "cm\n\n")
+
+cat("Curvature Assessment:\n")
+cat("  Gap (Actual - Predicted) =", round(curvature_gap, 2), "cm\n")
+cat("  Percent Difference =", round((curvature_gap/predicted_center)*100, 1), "%\n\n")
+
+if(curvature_gap < 0) {
+  cat("  Direction: Center is BELOW prediction (downward curvature)\n")
+} else {
+  cat("  Direction: Center is ABOVE prediction (upward curvature)\n")
+}
+```
+
+```{r}
+#| label: phase3-curvature-test
+
+# Method 1: t-test comparing actual center to predicted
+# H0: actual_center = predicted_center (linear model adequate)
+# Ha: actual_center ≠ predicted_center (curvature exists)
+
+# Calculate standard error
+se_center <- sd(center_points$Distance_cm) / sqrt(nrow(center_points))
+
+# Calculate t-statistic
+t_stat <- (actual_center - predicted_center) / se_center
+
+# Degrees of freedom
+df <- nrow(center_points) - 1
+
+# Two-tailed p-value
+p_value <- 2 * pt(abs(t_stat), df = df, lower.tail = FALSE)
+
+# Display test results
+cat("STATISTICAL TEST FOR CURVATURE\n")
+
+cat("Hypothesis Test:\n")
+cat("  H₀: Center = Predicted (Linear model adequate)\n")
+cat("  Hₐ: Center ≠ Predicted (Curvature exists)\n\n")
+
+cat("Test Statistics:\n")
+cat("  t-statistic =", round(t_stat, 3), "\n")
+cat("  Degrees of freedom =", df, "\n")
+cat("  P-value =", round(p_value, 4), "\n\n")
+
+cat("Decision Criterion:\n")
+cat("  Significance level: α = 0.05\n\n")
+
+```
+
+```{r}
+#| label: phase5-diagnostics
+#| fig-width: 12
+#| fig-height: 10
+#| fig-cap: "Model 2 Diagnostic Plots"
+
+# Create the 4 standard diagnostic plots
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 2))
+
+plot(model_2, which = 1)
+plot(model_2, which = 2)
+plot(model_2, which = 3)
+plot(model_2, which = 5)
+
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 2))
+
+```
+
+```{r}
+#| label: phase6-prediction-function
+
+predict_distance <- function(angle, arm, bands, interval = "none") {
+  
+  # Create input data
+  new_data <- data.frame(
+    LaunchAngle_deg = angle,
+    ArmLength_cm = arm,
+    RubberBands_count = bands
+  )
+  
+  # Get prediction
+  if (interval == "none") {
+    pred <- predict(model_2, newdata = new_data)
+    return(round(pred, 1))
+  } else {
+    pred <- predict(model_2, newdata = new_data, interval = interval, level = 0.95)
+    return(round(pred, 1))
+  }
+}
+```
+
+```{r}
+#| label: phase6-test-function
+
+# Test optimal configuration
+predict_distance(15, 7.5, 4)
+
+# Test worst configuration  
+predict_distance(45, 7.5, 2)
+
+# Test center point
+predict_distance(30, 9.5, 3)
+
+# Test with confidence interval
+predict_distance(15, 7.5, 4, interval = "confidence")
+
+# Test with prediction interval
+predict_distance(20, 10, 3.5, interval = "prediction")
+```
+
